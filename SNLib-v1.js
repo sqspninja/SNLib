@@ -5,25 +5,85 @@
             debug: false, // Enable or disable debug logging
         },
 
+        isReady: false, // Indicates if SNLib is ready
+        version: "1.0.0", // Version number
         emittedEvents: new Map(), // Track emitted events
+        _readyCallbacks: [], // Queue for ready callbacks
+        _waitingForSquarespace: false, // Prevent duplicate readiness checks
+
+        /**
+         * Automatically initialize and wait for Squarespace's `afterBodyLoad`.
+         */
+        init() {
+            this.waitForSquarespace();
+        },
+
+        /**
+         * Register a custom script to run after Squarespace and SNLib are fully ready.
+         * @param {Function} script - The custom script to execute.
+         *
+         * Usage Example:
+         * SNLib.runAfterReady(() => {
+         *     console.log("Squarespace is ready, and this custom script is running!");
+         * });
+         */
+        runAfterReady(script) {
+            if (this.isReady) {
+                script(); // Run immediately if already ready
+            } else {
+                this._readyCallbacks.push(script); // Queue for later execution
+            }
+        },
+
+        /**
+         * Wait for Squarespace's `afterBodyLoad` and execute queued callbacks when ready.
+         */
+        waitForSquarespace() {
+            if (this.isReady) {
+                // Already ready, execute queued callbacks immediately
+                while (this._readyCallbacks.length > 0) {
+                    const cb = this._readyCallbacks.shift();
+                    cb();
+                }
+                return;
+            }
+
+            if (!this._waitingForSquarespace) {
+                this._waitingForSquarespace = true;
+
+                const executeCallbacks = () => {
+                    this.isReady = true; // Mark SNLib as ready
+                    while (this._readyCallbacks.length > 0) {
+                        const cb = this._readyCallbacks.shift();
+                        cb();
+                    }
+                };
+
+                if (window.Squarespace && window.Squarespace.afterBodyLoad) {
+                    executeCallbacks();
+                } else {
+                    const interval = setInterval(() => {
+                        if (window.Squarespace && window.Squarespace.afterBodyLoad) {
+                            clearInterval(interval);
+                            executeCallbacks();
+                        }
+                    }, 50); // Retry every 50ms
+                }
+            }
+        },
 
         /**
          * Fetch JSON for the current page.
          * @param {string} [format='json'] - Query string format (e.g., 'json', 'json-pretty').
          * @param {string|null} [key=null] - Optional key to extract specific data from JSON.
          * @returns {Promise<any>} - Returns the JSON data or a specific key.
-         *
-         * Usage Example:
-         * SNLib.settings.currentPageEnabled = true;
-         * SNLib.fetchCurrentPage('json', 'title')
-         *     .then((data) => console.log('Current page title:', data))
-         *     .catch((err) => console.error(err));
          */
         async fetchCurrentPage(format = 'json', key = null) {
             if (!this.settings.currentPageEnabled) {
                 console.warn('Fetching for the current page is disabled.');
                 return null;
             }
+
             const path = location.pathname;
             return this.fetchPage(path, format, key);
         },
@@ -34,11 +94,6 @@
          * @param {string} [format='json'] - Query string format (e.g., 'json', 'json-pretty').
          * @param {string|null} [key=null] - Optional key to extract specific data from JSON.
          * @returns {Promise<any>} - Returns the JSON data or a specific key.
-         *
-         * Usage Example:
-         * SNLib.fetchPage('/blog', 'json', 'items')
-         *     .then((data) => console.log('Blog items:', data))
-         *     .catch((err) => console.error(err));
          */
         async fetchPage(path, format = 'json', key = null) {
             const url = `${path}?format=${format}`;
@@ -56,246 +111,75 @@
         },
 
         /**
-         * Observe an element's visibility in the viewport.
-         * @param {Element} element - The DOM element to observe.
-         * @param {Function} onEnter - Callback when the element enters the viewport.
-         * @param {Function} onLeave - Callback when the element leaves the viewport.
-         * @param {Object} [options={}] - Custom IntersectionObserver options.
-         * @returns {IntersectionObserver} - Returns the IntersectionObserver instance.
+         * Log debug messages if debug mode is enabled.
+         * @param {string} message - The debug message to log.
          *
          * Usage Example:
-         * const targetElement = document.querySelector('#my-element');
-         * SNLib.observeElementVisibility(
-         *     targetElement,
-         *     (el) => console.log(`${el.id} entered the viewport`),
-         *     (el) => console.log(`${el.id} left the viewport`),
-         *     { threshold: 0.5 } // Element needs to be 50% visible to trigger
-         * );
+         * SNLib.settings.debug = true;
+         * SNLib.logDebug("This is a debug message.");
          */
-        observeElementVisibility(element, onEnter, onLeave, options = {}) {
-            const defaultOptions = {
-                root: null,
-                rootMargin: "0px",
-                threshold: 0.1,
-            };
-
-            const observerOptions = { ...defaultOptions, ...options };
-
-            const visibilityObserver = new IntersectionObserver((entries) => {
-                entries.forEach((entry) => {
-                    if (entry.isIntersecting) {
-                        onEnter(entry.target); // When element is in view
-                    } else {
-                        onLeave(entry.target); // When element is out of view
-                    }
-                });
-            }, observerOptions);
-
-            visibilityObserver.observe(element);
-            return visibilityObserver;
-        },
-
-        /**
-         * Emit a custom event on the document.
-         * @param {string} eventName - The name of the event to emit.
-         * @param {any} detail - The data to include in the event detail.
-         * @param {Object} [options={}] - Additional options (flag to check duplicate events, callback for next action).
-         *
-         * Usage Example:
-         * SNLib.emitCustomEvent('myCustomEvent', { key: 'value' }, {
-         *     flag: true,
-         *     next: () => console.log('Event emitted successfully.')
-         * });
-         *
-         * document.addEventListener('myCustomEvent', (e) => {
-         *     console.log('Received event:', e.detail);
-         * });
-         */
-        emitCustomEvent(eventName, detail, options = {}) {
-            const { flag = false, next = null } = options;
-
-            if (flag && this.emittedEvents.has(eventName)) {
-                console.warn(`Event ${eventName} has already been emitted.`);
-                return;
-            }
-
-            const customEvent = new CustomEvent(eventName, { detail });
-            document.dispatchEvent(customEvent);
-            this.emittedEvents.set(eventName, true); // Mark the event as emitted
-
-            if (typeof next === 'function') {
-                next(); // Execute the provided callback
+        logDebug(message) {
+            if (this.settings.debug) {
+                console.debug(`[SNLib Debug]: ${message}`);
             }
         },
 
         /**
-         * Load a library (JS or CSS) dynamically.
-         * @param {string} src - The source URL of the library to load.
-         * @param {Function|null} [callback=null] - Optional callback to execute after the library is loaded.
-         * @returns {Promise<void>} - Resolves when the library is successfully loaded.
+         * Check if a library is loaded by its global object name.
+         * @param {string} globalName - The global object name (e.g., "jQuery").
+         * @returns {boolean} - True if the library is loaded.
          *
-         * Usage Examples:
-         *
-         * // Example 1: Inline callback
-         * SNLib.loadLibrary('https://cdn.example.com/script.js', () => {
-         *     console.log('Inline callback: Library loaded successfully.');
-         * }).catch((err) => console.error('Error loading library:', err));
-         *
-         * // Example 2: Preset callback function
-         * function handleLibraryLoaded() {
-         *     console.log('Preset callback: Library loaded successfully.');
+         * Usage Example:
+         * if (SNLib.isLibraryLoaded("jQuery")) {
+         *     console.log("jQuery is loaded!");
          * }
-         * SNLib.loadLibrary('https://cdn.example.com/styles.css', handleLibraryLoaded)
-         *     .catch((err) => console.error('Error loading library:', err));
-         *
-         * // Example 3: Without catch (optional error handling)
-         * SNLib.loadLibrary('https://cdn.example.com/another-script.js', () => {
-         *     console.log('No explicit error handling, library loaded.');
-         * });
          */
-        loadLibrary(src, callback = null) {
-            return new Promise((resolve, reject) => {
-                let element;
-
-                if (src.endsWith(".css")) {
-                    element = document.createElement("link");
-                    element.href = src;
-                    element.rel = "stylesheet";
-                } else {
-                    element = document.createElement("script");
-                    element.src = src;
-                }
-
-                element.onload = () => {
-                    if (typeof callback === 'function') {
-                        callback(); // Execute the optional callback
-                    }
-                    resolve();
-                };
-
-                element.onerror = () => reject(new Error(`Failed to load ${src}`));
-                document.head.appendChild(element);
-            });
+        isLibraryLoaded(globalName) {
+            return !!globalThis[globalName];
         },
 
         /**
-         * Wait for Squarespace to be ready and override `afterBodyLoad`.
+         * Debounce a function to limit its execution rate.
+         * @param {Function} func - The function to debounce.
+         * @param {number} delay - The delay in milliseconds.
+         * @returns {Function} - The debounced function.
          *
          * Usage Example:
-         * SNLib.waitForSquarespace(() => {
-         *     console.log("Squarespace is ready!");
-         * });
+         * const debouncedFunc = SNLib.debounce(() => console.log("Debounced!"), 300);
+         * window.addEventListener("resize", debouncedFunc);
          */
-        waitForSquarespace(callback) {
-            if (window.Squarespace && window.Squarespace.afterBodyLoad) {
-                callback();
-            } else {
-                setTimeout(() => this.waitForSquarespace(callback), 50); // Retry after 50ms
-            }
-        },
-
-        /**
-         * Utility to manage and query window dimensions.
-         *
-         * Usage Example:
-         * SNLib.manageWindow.init();
-         * const dimensions = SNLib.manageWindow.getDimensions();
-         * console.log(`Width: ${dimensions.width}, Height: ${dimensions.height}`);
-         * SNLib.manageWindow.destroy();
-         */
-        manageWindow: {
-            cachedWidth: window.innerWidth,
-            cachedHeight: window.innerHeight,
-            throttledUpdate: null, // Placeholder for the throttled update function
-
-            /**
-             * Initialize the window utility by caching dimensions and adding a throttled resize event listener.
-             */
-            init() {
-                // Use SNLib's internal throttle to limit update calls
-                this.throttledUpdate = SNLib.throttle(this.updateDimensions.bind(this), 200);
-                this.updateDimensions();
-                window.addEventListener("resize", this.throttledUpdate);
-            },
-
-            /**
-             * Update cached window dimensions.
-             */
-            updateDimensions() {
-                this.cachedWidth = window.innerWidth;
-                this.cachedHeight = window.innerHeight;
-            },
-
-            /**
-             * Get the current cached dimensions of the window.
-             * @returns {Object} An object containing `width` and `height` properties.
-             */
-            getDimensions() {
-                return { width: this.cachedWidth, height: this.cachedHeight };
-            },
-
-            /**
-             * Clean up the window utility by removing the resize event listener.
-             */
-            destroy() {
-                if (this.throttledUpdate) {
-                    window.removeEventListener("resize", this.throttledUpdate);
-                }
-            },
-        },
-
-        /**
-         * Check if the screen matches mobile dimensions based on a given width threshold.
-         * 
-         * @param {number} [maxWidth=766] - The width threshold for detecting mobile screens.
-         * @returns {Object} An object containing `isMobile`, `screenWidth`, `screenHeight`, `isPortrait`, and `isLandscape`.
-         *
-         * Usage Example:
-         * const screenInfo = SNLib.isMobileScreen(768);
-         * console.log(`Is mobile: ${screenInfo.isMobile}`);
-         */
-        isMobileScreen(maxWidth = 766) {
-            const screenWidth = window.innerWidth;
-            const screenHeight = window.innerHeight;
-
-            return {
-                isMobile: screenWidth <= maxWidth,
-                screenWidth,
-                screenHeight,
-                isPortrait: screenHeight > screenWidth,
-                isLandscape: screenWidth > screenHeight,
+        debounce(func, delay) {
+            let timer;
+            return function (...args) {
+                clearTimeout(timer);
+                timer = setTimeout(() => func.apply(this, args), delay);
             };
         },
 
         /**
-         * Wait for a specific DOM element to be available.
-         *
-         * @param {string} selector - The CSS selector for the element to wait for.
-         * @param {Function} callback - The callback function to execute when the element is found.
+         * Throttle a function to limit its execution rate.
+         * @param {Function} func - The function to throttle.
+         * @param {number} limit - The throttle limit in milliseconds.
+         * @returns {Function} - The throttled function.
          *
          * Usage Example:
-         * SNLib.waitForElement("#myElement", (element) => {
-         *     console.log("Element found:", element);
-         * });
+         * const throttledFunc = SNLib.throttle(() => console.log("Throttled!"), 300);
+         * window.addEventListener("resize", throttledFunc);
          */
-        waitForElement(selector, callback) {
-            const element = document.querySelector(selector);
-            if (element) {
-                callback(element);
-                return;
-            }
-
-            const observer = new MutationObserver(() => {
-                const target = document.querySelector(selector);
-                if (target) {
-                    callback(target);
-                    observer.disconnect();
+        throttle(func, limit) {
+            let lastCall = 0;
+            return function (...args) {
+                const now = Date.now();
+                if (now - lastCall >= limit) {
+                    lastCall = now;
+                    func.apply(this, args);
                 }
-            });
-
-            observer.observe(document.body, { childList: true, subtree: true });
+            };
         },
     };
+
+    // Automatically initialize SNLib
+    SNLib.init();
 
     // Attach to global scope
     global.SNLib = SNLib;
