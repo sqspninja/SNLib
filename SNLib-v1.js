@@ -23,11 +23,11 @@
          * @param {Function} script - The custom script to execute.
          *
          * Usage Example:
-         * SNLib.runAfterReady(() => {
+         * SNLib.ready(() => {
          *     console.log("Squarespace is ready, and this custom script is running!");
          * });
          */
-        runAfterReady(script) {
+        ready(script) {
             if (this.isReady) {
                 script(); // Run immediately if already ready
             } else {
