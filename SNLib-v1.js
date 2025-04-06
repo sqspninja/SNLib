@@ -2,10 +2,12 @@
     const SNLib = {
         settings: {
             currentPageEnabled: false, // Default: Disable automatic fetching for the current page
-            debug: false, // Enable or disable debug logging
+            debug: true, // Enable debug logging
         },
 
         isReady: false, // Indicates if SNLib is ready
+        inEditor: false, // Flag: Are we in the Squarespace editor?
+        activeEditMode: false, // Flag: Is active edit mode triggered?
         version: "1.0.0", // Version number
         emittedEvents: new Map(), // Track emitted events
         _readyCallbacks: [], // Queue for ready callbacks
@@ -13,19 +15,15 @@
 
         /**
          * Automatically initialize and wait for Squarespace's `afterBodyLoad`.
+         * Also, automatically start observing the editor state.
          */
         init() {
             this.waitForSquarespace();
+            this.observeEditor();
         },
 
         /**
          * Register a custom script to run after Squarespace and SNLib are fully ready.
-         * @param {Function} script - The custom script to execute.
-         *
-         * Usage Example:
-         * SNLib.ready(() => {
-         *     console.log("Squarespace is ready, and this custom script is running!");
-         * });
          */
         ready(script) {
             if (this.isReady) {
@@ -40,7 +38,6 @@
          */
         waitForSquarespace() {
             if (this.isReady) {
-                // Already ready, execute queued callbacks immediately
                 while (this._readyCallbacks.length > 0) {
                     const cb = this._readyCallbacks.shift();
                     cb();
@@ -52,7 +49,7 @@
                 this._waitingForSquarespace = true;
 
                 const executeCallbacks = () => {
-                    this.isReady = true; // Mark SNLib as ready
+                    this.isReady = true;
                     while (this._readyCallbacks.length > 0) {
                         const cb = this._readyCallbacks.shift();
                         cb();
@@ -67,16 +64,13 @@
                             clearInterval(interval);
                             executeCallbacks();
                         }
-                    }, 50); // Retry every 50ms
+                    }, 50);
                 }
             }
         },
 
         /**
          * Fetch JSON for the current page.
-         * @param {string} [format='json'] - Query string format (e.g., 'json', 'json-pretty').
-         * @param {string|null} [key=null] - Optional key to extract specific data from JSON.
-         * @returns {Promise<any>} - Returns the JSON data or a specific key.
          */
         async fetchCurrentPage(format = 'json', key = null) {
             if (!this.settings.currentPageEnabled) {
@@ -90,10 +84,6 @@
 
         /**
          * Fetch JSON for a specific page.
-         * @param {string} path - The path to fetch (e.g., '/blog').
-         * @param {string} [format='json'] - Query string format (e.g., 'json', 'json-pretty').
-         * @param {string|null} [key=null] - Optional key to extract specific data from JSON.
-         * @returns {Promise<any>} - Returns the JSON data or a specific key.
          */
         async fetchPage(path, format = 'json', key = null) {
             const url = `${path}?format=${format}`;
@@ -112,11 +102,6 @@
 
         /**
          * Log debug messages if debug mode is enabled.
-         * @param {string} message - The debug message to log.
-         *
-         * Usage Example:
-         * SNLib.settings.debug = true;
-         * SNLib.logDebug("This is a debug message.");
          */
         logDebug(message) {
             if (this.settings.debug) {
@@ -126,13 +111,6 @@
 
         /**
          * Check if a library is loaded by its global object name.
-         * @param {string} globalName - The global object name (e.g., "jQuery").
-         * @returns {boolean} - True if the library is loaded.
-         *
-         * Usage Example:
-         * if (SNLib.isLibraryLoaded("jQuery")) {
-         *     console.log("jQuery is loaded!");
-         * }
          */
         isLibraryLoaded(globalName) {
             return !!globalThis[globalName];
@@ -140,13 +118,6 @@
 
         /**
          * Debounce a function to limit its execution rate.
-         * @param {Function} func - The function to debounce.
-         * @param {number} delay - The delay in milliseconds.
-         * @returns {Function} - The debounced function.
-         *
-         * Usage Example:
-         * const debouncedFunc = SNLib.debounce(() => console.log("Debounced!"), 300);
-         * window.addEventListener("resize", debouncedFunc);
          */
         debounce(func, delay) {
             let timer;
@@ -158,13 +129,6 @@
 
         /**
          * Throttle a function to limit its execution rate.
-         * @param {Function} func - The function to throttle.
-         * @param {number} limit - The throttle limit in milliseconds.
-         * @returns {Function} - The throttled function.
-         *
-         * Usage Example:
-         * const throttledFunc = SNLib.throttle(() => console.log("Throttled!"), 300);
-         * window.addEventListener("resize", throttledFunc);
          */
         throttle(func, limit) {
             let lastCall = 0;
@@ -176,11 +140,63 @@
                 }
             };
         },
+
+        /**
+         * Observe the Squarespace editor's state by monitoring body class changes.
+         * Uses a debounced MutationObserver to check for the "sqs-edit-mode" (editor)
+         * and "sqs-edit-mode-active" (active editing) classes.
+         * This method updates SNLib.inEditor and SNLib.activeEditMode.
+         */
+        observeEditor() {
+            if (self === top) {
+                this.logDebug("Not running in an iframe; skipping editor observer.");
+                return;
+            }
+            this.logDebug("Running in an iframe, potential Squarespace editor environment.");
+
+            const checkClasses = () => {
+                this.logDebug("Current body classes: " + document.body.className);
+                if (document.body.classList.contains("sqs-edit-mode")) {
+                    this.inEditor = true;
+                    this.logDebug("Inside the Squarespace editor.");
+                    if (document.body.classList.contains("sqs-edit-mode-active")) {
+                        this.activeEditMode = true;
+                        this.logDebug("Active edit mode triggered.");
+                        // Place custom active edit mode code here
+                    } else {
+                        this.activeEditMode = false;
+                        this.logDebug("Inactive edit mode within the editor.");
+                    }
+                } else {
+                    this.inEditor = false;
+                    this.activeEditMode = false;
+                    this.logDebug("Not in the Squarespace editor.");
+                }
+            };
+
+            const debouncedCheckClasses = this.debounce(checkClasses.bind(this), 100);
+
+            // Create a single observer to monitor changes to the body's class attribute
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    if (mutation.type === "attributes" && mutation.attributeName === "class") {
+                        debouncedCheckClasses();
+                    }
+                });
+            });
+
+            observer.observe(document.body, { attributes: true });
+            // Perform an initial check immediately
+            checkClasses();
+        },
     };
 
-    // Automatically initialize SNLib
+    // Automatically initialize SNLib when the library loads
     SNLib.init();
 
-    // Attach to global scope
+    // Attach SNLib to the global scope
     global.SNLib = SNLib;
+
+    // Log that the library has been initialized
+    console.log("SNLib initialized:", global.SNLib);
 })(window);
